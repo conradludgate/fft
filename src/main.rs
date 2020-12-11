@@ -1,66 +1,8 @@
-#[derive(Debug, Copy, Clone, Default)]
-struct Complex<T> {
-    re: T,
-    im: T,
-}
-impl Complex<f64> {
-    fn new(re: f64, im: f64) -> Self {
-        Complex { re, im }
-    }
-    // e^(i*x)
-    fn ei(x: f64) -> Self {
-        Complex::new(x.cos(), x.sin())
-    }
-    fn abs(self) -> f64 {
-        (self.re * self.re + self.im * self.im).sqrt()
-    }
-}
+#[macro_use]
+extern crate approx;
 
-impl<T> std::ops::Mul for Complex<T>
-where
-    T: std::ops::Mul<Output = T> + std::ops::Add<Output = T> + std::ops::Sub<Output = T> + Copy,
-{
-    type Output = Complex<T>;
-
-    fn mul(self, rhs: Self) -> Self {
-        Complex {
-            re: self.re * rhs.re - self.im * rhs.im,
-            im: self.re * rhs.im + self.im * rhs.re,
-        }
-    }
-}
-impl<T> std::ops::Add for Complex<T>
-where
-    T: std::ops::Add<Output = T>,
-{
-    type Output = Complex<T>;
-
-    fn add(self, rhs: Self) -> Self {
-        Complex {
-            re: self.re + rhs.re,
-            im: self.im + rhs.im,
-        }
-    }
-}
-impl<T> std::ops::Sub for Complex<T>
-where
-    T: std::ops::Sub<Output = T>,
-{
-    type Output = Complex<T>;
-
-    fn sub(self, rhs: Self) -> Self {
-        Complex {
-            re: self.re - rhs.re,
-            im: self.im - rhs.im,
-        }
-    }
-}
-
-impl From<f64> for Complex<f64> {
-    fn from(re: f64) -> Self {
-        Complex::new(re, 0.0)
-    }
-}
+mod complex;
+use complex::*;
 
 fn fft(mut input: Vec<Complex<f64>>) -> Vec<Complex<f64>> {
     let n = input.len();
@@ -101,43 +43,47 @@ fn fft(mut input: Vec<Complex<f64>>) -> Vec<Complex<f64>> {
     input
 }
 
+fn range<F>(steps: usize, min: f64, max: f64, f: F) -> Vec<f64>
+where
+    F: Fn(f64) -> f64,
+{
+    let step = (max - min) / (steps as f64);
+    (0..steps)
+        .into_iter()
+        .map(|s| (s as f64) * step + min)
+        .map(f)
+        .collect()
+}
+
+fn add(a: &Vec<f64>, b: &Vec<f64>) -> Vec<f64> {
+    a.iter().zip(b.iter()).map(|(&a, &b)| a + b).collect()
+}
+
+fn to_complex_vec(a: Vec<f64>) -> Vec<Complex<f64>> {
+    a.into_iter().map(Complex::from).collect()
+}
+
+fn to_abs_vec(a: Vec<Complex<f64>>) -> Vec<f64> {
+    a.into_iter().map(Complex::abs).collect()
+}
+
 fn main() {
-    let signal1: Vec<f64> = (0..64)
-        .into_iter()
-        .map(|x| ((x as f64) / 2.0).sin())
-        .collect();
+    let signal1: Vec<f64> = range(256, 0.0, 10.0, f64::sin);
+    let signal2: Vec<f64> = range(256, 0.0, 18.0, f64::sin);
+    let signal3: Vec<f64> = add(&signal1, &signal2);
 
-    let signal2: Vec<f64> = (0..64)
-        .into_iter()
-        .map(|x| ((x as f64) / 5.0).sin())
-        .collect();
+    // println!("signal1: {:?}", signal1);
+    // println!("signal2: {:?}", signal2);
+    // println!("signal3: {:?}", signal3);
 
-    let signal3: Vec<f64> = signal1
-        .iter()
-        .zip(signal2.iter())
-        .map(|(&a, &b)| a + b)
-        .collect();
+    let output1: Vec<f64> = to_abs_vec(fft(to_complex_vec(signal1)));
+    let output2: Vec<f64> = to_abs_vec(fft(to_complex_vec(signal2)));
+    let output3: &[f64] = &to_abs_vec(fft(to_complex_vec(signal3)));
+    let output12: &[f64] = &add(&output1, &output2);
 
-    println!("signal1: {:?}", signal1);
-    println!("signal2: {:?}", signal2);
-    println!("signal3: {:?}", signal3);
+    // println!("output1: {:?}", output1);
+    // println!("output2: {:?}", output2);
+    // println!("output3: {:?}", output3);
 
-    let output1: Vec<f64> = fft(signal1.into_iter().map(Complex::from).collect())
-        .into_iter()
-        .map(|z| z.abs())
-        .collect();
-
-    let output2: Vec<f64> = fft(signal2.into_iter().map(Complex::from).collect())
-        .into_iter()
-        .map(|z| z.abs())
-        .collect();
-
-    let output3: Vec<f64> = fft(signal3.into_iter().map(Complex::from).collect())
-        .into_iter()
-        .map(|z| z.abs())
-        .collect();
-
-    println!("output1: {:?}", output1);
-    println!("output2: {:?}", output2);
-    println!("output3: {:?}", output3);
+    assert_relative_eq!(output12, output3, max_relative = 0.5);
 }
