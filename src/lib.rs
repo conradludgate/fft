@@ -30,9 +30,13 @@ pub fn fft_inplace(input: &mut [Complex<f64>]) {
     }
 
     let step = -2.0 * std::f64::consts::PI / (n as f64);
+    let mut theta = 0.0;
 
     let mut zs = Vec::with_capacity(n / 2);
-    zs.extend((0..n / 2).map(|k| Complex::from_polar(1.0, (k as f64) * step)));
+    for _ in 0..n / 2 {
+        zs.push(Complex::from_polar(1.0, theta));
+        theta += step;
+    }
 
     let mut m = 2;
     while m <= n {
