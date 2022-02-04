@@ -36,8 +36,10 @@ pub fn fft_inplace(input: &mut [Complex<f64>]) {
 
     let mut m = 2;
     while m <= n {
-        for s in (0..n).step_by(m) {
-            combine(&zs, &mut input[s..s + m]);
+        let mut s = 0;
+        while s < n {
+            combine(&zs, &mut input[s..][..m]);
+            s += m;
         }
         m <<= 1;
     }
