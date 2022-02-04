@@ -36,10 +36,8 @@ pub fn fft_inplace(input: &mut [Complex<f64>]) {
 
     let mut m = 2;
     while m <= n {
-        let mut s = 0;
-        while s < n {
-            combine(&zs, &mut input[s..][..m]);
-            s += m;
+        for input in input.chunks_exact_mut(m) {
+            combine(&zs, input);
         }
         m <<= 1;
     }
