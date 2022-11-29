@@ -17,3 +17,6 @@ rand_distr = "0.4.3"
 [[bench]]
 name = "benches"
 harness = false
+
+[profile.release]
+debug = true
