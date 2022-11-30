@@ -122,23 +122,42 @@ thread_local! {
 /// 1. zs.len() + 4 is a power of two
 /// 2. len + 4 is a power of two
 /// 3. len < zs.len()
-unsafe fn twiddles(zs: &mut [Complex<f64>], mut len: usize) {
+pub unsafe fn twiddles(mut zs: &mut [Complex<f64>], len: usize) {
     if !(zs.len() + 4).is_power_of_two() || !(len + 4).is_power_of_two() || len >= zs.len() {
         std::hint::unreachable_unchecked();
     }
 
+    // SAFETY HELPERS FOR THIS PROCEDURE:
+    // len is 4 less than a power of two. Therefore the bit pattern must be something like
+    // 0001_1111_1100 - a number with leading zeros, a set of ones, and then 2 zeros at the end.
+    // m is defined as len + 4, so it will look like
+    // 0010_0000_0000 - which has a single bit set.
+    // zs.len() is also 4 less than a power of two, but strictly greater than len. Something like
+    // 0011_1111_1100 - less leading zeros, but the same 2 trailing zeros.
+    //
+    // zs.len() - len will therefore be very simply the bitwise xor, and result in something like
+    // 0010_0000_0000 - this number is clearly positive and larger than len by at least 4
+    // in the above case, it's equal to m, but zs.len() can be greater, therefore m is the lower bound.
+    // if zs.len() was larger, it will have more leading ones, which means that it will look like
+    // 1110_0000_0000
+    //
+    // We start by splitting zs at len. Therefore, we have `zs.len() - len` entries in zs. (what we did above)
+    // We then split that at `m`. At minimum, this leaves zs empty,
+    // otherwise zs will have 1 less one digit on the end. (since m is that power of two).
+    //
+    // After each iteration, we double m. This makes the bit in m move over left, to match the new bit pattern of zs.len.
+    // if zs is empty at the end, we exit.
+
+    let mut m = len + 4;
+    zs = zs.split_at_mut(len).1;
+
     loop {
-        let m = len + 4;
-        let step = std::f64::consts::PI / (m as f64);
+        // SAFETY: There are guaranteed m elements in this slice. See above
+        let (section, rest) = unsafe { zs.split_at_mut_unchecked(m) };
+        zs = rest;
 
-        // SAFETY: len < zs.len()
-        // len+4 and zs.len()+4 are powers of two.
-        // therefore zs.len() - len is (zs.len()+4)-(len+4) which is
-        // at least len+4 - which is the same value as m.
-        let section = unsafe { zs.get_unchecked_mut(len..len + m) };
-
-        // SAFETY: section length is m (len..len+m)
-        // m >= 4 (m = len + 4, and len is < zs.len() therefore no overflow)
+        // SAFETY: section.len() is m
+        // m >= 4 (see above for reasoning)
         // m / 2 is therefore definitely strictly less than m, since it's non-zero
         // therefore, m == section.len() > m/2
         if section.len() <= m / 2 {
@@ -149,6 +168,7 @@ unsafe fn twiddles(zs: &mut [Complex<f64>], mut len: usize) {
         section[0].re = 1.0;
         section[m / 2].im = -1.0;
 
+        let step = std::f64::consts::PI / (m as f64);
         for i in 1..m / 2 {
             let theta = step * (i as f64);
             let cos = theta.cos();
@@ -167,8 +187,8 @@ unsafe fn twiddles(zs: &mut [Complex<f64>], mut len: usize) {
             }
         }
 
-        len += m;
-        if len == zs.len() {
+        m <<= 1;
+        if zs.len() == 0 {
             return;
         }
     }
