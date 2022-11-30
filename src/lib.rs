@@ -89,7 +89,11 @@ pub fn fft_inplace(input: &mut [Complex<f64>]) {
     let mut zs = TWIDDLES.with(|cell| cell.take());
     // load in the twiddle values if not enough
     if zs.len() + 4 < input.len() {
-        twiddles(&mut zs, input.len());
+        let len = zs.len();
+        zs.resize(input.len() - 4, Complex::default());
+        unsafe {
+            twiddles(&mut zs, len);
+        }
     }
 
     // Safety: `input.len().is_power_of_two()` and `zs.len() + 4 >= input.len()`
@@ -104,38 +108,45 @@ thread_local! {
 }
 
 #[inline(never)]
-// computes the 'twiddle values' for the FFT algorithm.
-// These are e^(-2i*pi) where i is in [0, n/2).
-// For cache efficiency, these are computed multiple times.
-// The output size of the twiddle values will be at least n-4.
-// Laid out in memory, that looks like [[C; 4], [C; 8], [C; 16], ..] but flattened.
-// We don't compute the twiddle values for n = 2/4 because they're trivially [0] and [0, -i] respectively.
-fn twiddles(zs: &mut Vec<Complex<f64>>, n: usize) {
-    let mut len = zs.len();
-
-    // if we're calling this function, then we don't have enough values in zs. this only happens for n > 4
-    zs.resize(n - 4, Complex::default());
+/// computes the 'twiddle values' for the FFT algorithm.
+/// These are e^(-2i*pi) where i is in [0, n/2).
+/// For cache efficiency, these are computed multiple times.
+/// The output size of the twiddle values will be at least n-4.
+/// Laid out in memory, that looks like [[C; 4], [C; 8], [C; 16], ..] but flattened.
+/// We don't compute the twiddle values for n = 2/4 because they're trivially [0] and [0, -i] respectively.
+///
+/// # Safety
+/// 1. zs.len() + 4 is a power of two
+/// 2. len + 4 is a power of two
+/// 3. len < zs.len()
+pub unsafe fn twiddles(zs: &mut Vec<Complex<f64>>, mut len: usize) {
+    if !(zs.len() + 4).is_power_of_two() || !(len + 4).is_power_of_two() || len >= zs.len() {
+        std::hint::unreachable_unchecked();
+    }
 
     loop {
         let m = len + 4;
         let step = std::f64::consts::PI / (m as f64);
 
-        zs[len] = Complex { re: 1.0, im: 0.0 };
-        zs[len + m / 2] = Complex { re: 0.0, im: -1.0 };
+        let section = unsafe { zs.get_unchecked_mut(len..len + m) };
+
+        section.get_unchecked_mut(0).re = 1.0;
+        section.get_unchecked_mut(m / 2).im = -1.0;
 
         for i in 1..m / 2 {
             let theta = step * (i as f64);
             let cos = theta.cos();
 
-            zs[len + i].re = cos;
-            zs[len + i + m / 2].im = -cos;
-            zs[len + m / 2 - i].im = -cos;
-            zs[len + m - i].re = -cos;
+            unsafe {
+                section.get_unchecked_mut(i).re = cos;
+                section.get_unchecked_mut(m / 2 - i).im = -cos;
+                section.get_unchecked_mut(m / 2 + i).im = -cos;
+                section.get_unchecked_mut(m - i).re = -cos;
+            }
         }
 
         len += m;
-        if len + 4 >= n {
-            dbg!(zs);
+        if len >= zs.len() {
             return;
         }
     }
