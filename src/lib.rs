@@ -1,4 +1,5 @@
-use std::{cell::Cell, hint::unreachable_unchecked, mem::MaybeUninit};
+#![feature(slice_as_chunks)]
+use std::{cell::Cell, hint::unreachable_unchecked};
 
 use num_complex::Complex;
 
@@ -17,17 +18,12 @@ fn shuffle_inplace(input: &mut [Complex<f64>]) {
     }
 }
 
-/// combine but optimised for 2 elements
-fn combine2(input: &mut [Complex<f64>; 2]) {
-    let [e, o] = *input;
-    *input = [e + o, e - o];
-}
-
-/// combine but optimised for 4 elements
-fn combine4(input: &mut [Complex<f64>; 4]) {
-    let [e0, e1, o0, o1] = *input;
+/// combine but optimised for both 2 and 4 elements together
+pub fn combine4(input: [Complex<f64>; 4]) -> [Complex<f64>; 4] {
+    let [e0, o0, e1, o1] = input;
+    let [e0, e1, o0, o1] = [e0 + o0, e0 - o0, e1 + o1, e1 - o1];
     let o1 = o1 * Complex::i();
-    *input = [e0 + o0, e1 + o1, e0 - o0, e1 - o1];
+    [e0 + o0, e1 + o1, e0 - o0, e1 - o1]
 }
 
 unsafe fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
@@ -48,26 +44,21 @@ unsafe fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
     }
 }
 
+/// Safety: input.len() <= 4 || !input.len().is_power_of_two() || !zs.len().is_power_of_two()
 unsafe fn combine_inplace(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
-    if input.len() < 2 || !input.len().is_power_of_two() || !zs.len().is_power_of_two() {
+    if input.len() <= 4 || !input.len().is_power_of_two() || !zs.len().is_power_of_two() {
         unreachable_unchecked()
     }
 
     let n = input.len();
     let x = n.trailing_zeros(); // log_2
 
-    if 1 < x {
-        for j in 0..(n >> 1) {
-            let input = &mut *(input.as_mut_ptr().add(j << 1) as *mut _);
-            combine2(input);
-        }
+    // fast path for groups of 2/4.
+    for input in input.as_chunks_unchecked_mut() {
+        *input = combine4(*input);
     }
-    if 2 < x {
-        for j in 0..(n >> 2) {
-            let input = &mut *(input.as_mut_ptr().add(j << 2) as *mut _);
-            combine4(input);
-        }
-    }
+
+    // handle the rest of the groupings
     for i in 3..=x {
         for j in 0..(n >> i) {
             let input =
@@ -77,8 +68,25 @@ unsafe fn combine_inplace(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
     }
 }
 
+/// Performs the Cooley-Tukey Radix-2 FFT algorithm in place on power-of-two length inputs
 pub fn fft_inplace(input: &mut [Complex<f64>]) {
-    assert!(input.len().is_power_of_two());
+    assert!(
+        input.len().is_power_of_two(),
+        "This Cooley-Tokey Radix-2 FFT implementation only works on power of two length inputs"
+    );
+
+    // skip lengths 2 and 4 since they're not very interesting
+    if let [e, o] = input {
+        let o1 = *e - *o;
+        *e += *o;
+        *o = o1;
+        return;
+    } else if let ([input], []) = input.as_chunks_mut() {
+        input.swap(1, 2);
+        *input = combine4(*input);
+        return;
+    }
+
     shuffle_inplace(input);
 
     let mut zs = TWIDDLES.with(|cell| cell.take());
