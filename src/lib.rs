@@ -1,5 +1,7 @@
 #![feature(slice_as_chunks, slice_split_at_unchecked)]
 
+use std::hint::unreachable_unchecked;
+
 use num_complex::Complex;
 
 /// combine but optimised for both 2 and 4 elements together
@@ -91,12 +93,13 @@ pub fn fft_inplace(input: &mut [Complex<f64>]) {
     if zs.len() + 4 < input.len() {
         let len = zs.len();
         zs.resize(input.len() - 4, Complex::default());
-        unsafe {
-            twiddles(&mut zs, len);
-        }
+
+        // SAFETY: zs.len() + 4 == input.len() which is a power of two
+        // and the len was less before hand and must have resulted from a prior call of this
+        unsafe { twiddles(&mut zs, len) }
     }
 
-    // Safety: `input.len().is_power_of_two()` and `zs.len() + 4 >= input.len()`
+    // SAFETY: `input.len().is_power_of_two()` and `zs.len() + 4 >= input.len()`
     unsafe { fft_inner(input, &zs) }
 
     TWIDDLES.with(|cell| cell.set(zs));
@@ -119,7 +122,7 @@ thread_local! {
 /// 1. zs.len() + 4 is a power of two
 /// 2. len + 4 is a power of two
 /// 3. len < zs.len()
-pub unsafe fn twiddles(zs: &mut Vec<Complex<f64>>, mut len: usize) {
+unsafe fn twiddles(zs: &mut [Complex<f64>], mut len: usize) {
     if !(zs.len() + 4).is_power_of_two() || !(len + 4).is_power_of_two() || len >= zs.len() {
         std::hint::unreachable_unchecked();
     }
@@ -128,15 +131,34 @@ pub unsafe fn twiddles(zs: &mut Vec<Complex<f64>>, mut len: usize) {
         let m = len + 4;
         let step = std::f64::consts::PI / (m as f64);
 
+        // SAFETY: len < zs.len()
+        // len+4 and zs.len()+4 are powers of two.
+        // therefore zs.len() - len is (zs.len()+4)-(len+4) which is
+        // at least len+4 - which is the same value as m.
         let section = unsafe { zs.get_unchecked_mut(len..len + m) };
 
-        section.get_unchecked_mut(0).re = 1.0;
-        section.get_unchecked_mut(m / 2).im = -1.0;
+        // SAFETY: section length is m (len..len+m)
+        // m >= 4 (m = len + 4, and len is < zs.len() therefore no overflow)
+        // m / 2 is therefore definitely strictly less than m, since it's non-zero
+        // therefore, m == section.len() > m/2
+        if section.len() <= m / 2 {
+            unsafe { unreachable_unchecked() }
+        }
+
+        // the above assertion allows the bounds check to be elided here :)
+        section[0].re = 1.0;
+        section[m / 2].im = -1.0;
 
         for i in 1..m / 2 {
             let theta = step * (i as f64);
             let cos = theta.cos();
 
+            // SAFETY: i is    in [1, m/2)
+            // m/2 - i is also in [1, m/2)
+            // m/2 + i is      in [m/2+1, m)
+            // m - i == m/2 + m/2 - i
+            //   which is also in [m/2+1, m)
+            // All of these indicies are within [0, m)
             unsafe {
                 section.get_unchecked_mut(i).re = cos;
                 section.get_unchecked_mut(m / 2 - i).im = -cos;
@@ -146,7 +168,7 @@ pub unsafe fn twiddles(zs: &mut Vec<Complex<f64>>, mut len: usize) {
         }
 
         len += m;
-        if len >= zs.len() {
+        if len == zs.len() {
             return;
         }
     }
