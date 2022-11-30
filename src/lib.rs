@@ -1,12 +1,12 @@
 #![feature(slice_as_chunks)]
-use std::{cell::Cell, hint::unreachable_unchecked};
+use std::{cell::Cell, hint::unreachable_unchecked, time::Instant};
 
 use num_complex::Complex;
 
 fn shuffle_inplace(input: &mut [Complex<f64>]) {
     let n = input.len();
 
-    let shift = (n - 1).leading_zeros();
+    let shift = n.leading_zeros() + 1;
     for i in 0..n {
         let j = i.reverse_bits() >> shift;
         if j < i {
@@ -19,23 +19,21 @@ fn shuffle_inplace(input: &mut [Complex<f64>]) {
 }
 
 /// combine but optimised for both 2 and 4 elements together
-pub fn combine4(input: [Complex<f64>; 4]) -> [Complex<f64>; 4] {
+fn combine4(input: [Complex<f64>; 4]) -> [Complex<f64>; 4] {
     let [e0, o0, e1, o1] = input;
     let [e0, e1, o0, o1] = [e0 + o0, e0 - o0, e1 + o1, e1 - o1];
-    let o1 = o1 * Complex::i();
+    let o1 = o1 * -Complex::i();
     [e0 + o0, e1 + o1, e0 - o0, e1 - o1]
 }
 
 unsafe fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
-    if input.len() < 2 || !input.len().is_power_of_two() || !zs.len().is_power_of_two() {
+    let n = input.len() / 2;
+    if n < 1 || !input.len().is_power_of_two() || zs.len() != n {
         unreachable_unchecked()
     }
 
-    let n = input.len() / 2;
-    let z_step = zs.len() / n;
-
     for k in 0..n {
-        let z = *zs.get_unchecked(k * z_step);
+        let z = *zs.get_unchecked(k);
 
         let e = *input.get_unchecked_mut(k);
         let oz = *input.get_unchecked(k + n) * z;
@@ -44,9 +42,9 @@ unsafe fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
     }
 }
 
-/// Safety: input.len() <= 4 || !input.len().is_power_of_two() || !zs.len().is_power_of_two()
+/// Safety: input.len() > 4 && input.len().is_power_of_two() || zs.len() + 1 == input.len()
 unsafe fn combine_inplace(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
-    if input.len() <= 4 || !input.len().is_power_of_two() || !zs.len().is_power_of_two() {
+    if input.len() <= 4 || !input.len().is_power_of_two() || zs.len() + 1 != input.len() {
         unreachable_unchecked()
     }
 
@@ -59,12 +57,17 @@ unsafe fn combine_inplace(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
     }
 
     // handle the rest of the groupings
+    let mut z_start = 3;
+    let mut z_end = 7;
     for i in 3..=x {
+        let zs = unsafe { zs.get_unchecked(z_start..z_end) };
         for j in 0..(n >> i) {
             let input =
                 &mut *std::ptr::slice_from_raw_parts_mut(input.as_mut_ptr().add(j << i), 1 << i);
             combine(input, zs);
         }
+        z_start = z_end;
+        z_end += 1 << i;
     }
 }
 
@@ -90,9 +93,7 @@ pub fn fft_inplace(input: &mut [Complex<f64>]) {
     shuffle_inplace(input);
 
     let mut zs = TWIDDLES.with(|cell| cell.take());
-    if zs.len() < input.len() / 2 {
-        zs = twiddles(input.len());
-    }
+    zs = twiddles(zs, input.len());
 
     unsafe { combine_inplace(input, &zs) };
 
@@ -103,15 +104,24 @@ thread_local! {
     static TWIDDLES: Cell<Vec<Complex<f64>>> = Cell::new(Vec::new());
 }
 
-pub fn twiddles(n: usize) -> Vec<Complex<f64>> {
-    let step = -2.0 * std::f64::consts::PI / (n as f64);
+pub fn twiddles(mut zs: Vec<Complex<f64>>, n: usize) -> Vec<Complex<f64>> {
+    while zs.len() + 1 < n {
+        zs = twiddles_inner(zs)
+    }
+    zs
+}
 
-    let mut zs = Vec::with_capacity(n / 2);
-    for (i, z) in zs.spare_capacity_mut().iter_mut().enumerate() {
+#[inline(never)]
+fn twiddles_inner(mut zs: Vec<Complex<f64>>) -> Vec<Complex<f64>> {
+    let m = zs.len() + 1;
+    let step = -std::f64::consts::PI / (m as f64);
+
+    zs.reserve(m);
+    for (i, z) in zs.spare_capacity_mut().iter_mut().enumerate().take(m) {
         let theta = step * (i as f64);
         z.write(Complex::from_polar(1.0, theta));
     }
-    unsafe { zs.set_len(n / 2) }
+    unsafe { zs.set_len(zs.len() + m) }
     zs
 }
 
@@ -123,4 +133,19 @@ fn foo() {
         .collect();
     fft_inplace(&mut data);
     dbg!(data);
+}
+
+#[test]
+fn bar() {
+    let mut start = Instant::now();
+    for _ in 0..5 {
+        for _ in 0..1000000 {
+            let mut data: Vec<Complex<f64>> = (0..2048).map(|x| Complex::from(x as f64)).collect();
+            fft_inplace(&mut data);
+            drop(std::hint::black_box(data));
+        }
+        let end = Instant::now();
+        dbg!(end - start);
+        start = end;
+    }
 }
