@@ -1,6 +1,4 @@
-#![feature(new_uninit)]
-
-use std::{hint::unreachable_unchecked, mem::MaybeUninit};
+use std::{cell::Cell, hint::unreachable_unchecked, mem::MaybeUninit};
 
 use num_complex::Complex;
 
@@ -21,23 +19,15 @@ fn shuffle_inplace(input: &mut [Complex<f64>]) {
 
 /// combine but optimised for 2 elements
 fn combine2(input: &mut [Complex<f64>; 2]) {
-    let e = input[0];
-    let o = input[1];
-    input[0] = e + o;
-    input[1] = e - o;
+    let [e, o] = *input;
+    *input = [e + o, e - o];
 }
 
 /// combine but optimised for 4 elements
 fn combine4(input: &mut [Complex<f64>; 4]) {
-    let e = input[0];
-    let o = input[2];
-    input[0] = e + o;
-    input[2] = e - o;
-
-    let e = input[1];
-    let o = input[3] * Complex::i();
-    input[1] = e + o;
-    input[3] = e - o;
+    let [e0, e1, o0, o1] = *input;
+    let o1 = o1 * Complex::i();
+    *input = [e0 + o0, e1 + o1, e0 - o0, e1 - o1];
 }
 
 unsafe fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
@@ -51,10 +41,10 @@ unsafe fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
     for k in 0..n {
         let z = *zs.get_unchecked(k * z_step);
 
-        let e = *input.get_unchecked(k);
-        let o = *input.get_unchecked(k + n);
-        *input.get_unchecked_mut(k) = e + z * o;
-        *input.get_unchecked_mut(k + n) = e - z * o;
+        let e = *input.get_unchecked_mut(k);
+        let oz = *input.get_unchecked(k + n) * z;
+        *input.get_unchecked_mut(k) = e + oz;
+        *input.get_unchecked_mut(k + n) = e - oz;
     }
 }
 
@@ -90,8 +80,19 @@ unsafe fn combine_inplace(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
 pub fn fft_inplace(input: &mut [Complex<f64>]) {
     assert!(input.len().is_power_of_two());
     shuffle_inplace(input);
-    let zs = twiddles(input.len());
+
+    let mut zs = TWIDDLES.with(|cell| cell.take());
+    if zs.len() < input.len() / 2 {
+        zs = twiddles(input.len());
+    }
+
     unsafe { combine_inplace(input, &zs) };
+
+    TWIDDLES.with(|cell| cell.set(zs));
+}
+
+thread_local! {
+    static TWIDDLES: Cell<Vec<Complex<f64>>> = Cell::new(Vec::new());
 }
 
 pub fn twiddles(n: usize) -> Vec<Complex<f64>> {

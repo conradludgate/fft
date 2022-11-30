@@ -10,13 +10,10 @@ num-complex = "0.4"
 
 [dev-dependencies]
 num-complex = { version = "0.4", features = ["rand"] }
-criterion = { version = "0.3", features = ["html_reports"] }
+criterion = { version = "0.4" }
 rand = "0.8.4"
 rand_distr = "0.4.3"
 
 [[bench]]
 name = "benches"
 harness = false
-
-[profile.release]
-debug = true
