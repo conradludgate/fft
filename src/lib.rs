@@ -1,8 +1,22 @@
-#![feature(slice_as_chunks, slice_split_at_unchecked)]
-
-use std::hint::unreachable_unchecked;
+#![feature(slice_as_chunks)]
 
 use num_complex::Complex;
+
+macro_rules! assume_unchecked {
+    ($cond:expr $(, $($tt:tt)+)?) => {{
+        if !$cond {
+            // We use `if cfg!(...)` here so that any formatting arguments will be marked as used
+            // by the macro, even in release mode (where they are definitely not used).
+            if cfg!(debug_assertions) {
+                panic!(assume_unchecked!(@panic_args $cond $(, $($tt)+)?));
+            } else {
+                std::hint::unreachable_unchecked()
+            }
+        }
+    }};
+    (@panic_args $cond:expr $(,)?) => { concat!("debug assertion failed: ", stringify!($cond)) };
+    (@panic_args $cond:expr, $($tt:tt)+) => { $($tt)+ };
+}
 
 /// combine but optimised for both 2 and 4 elements together
 fn combine4(input: [Complex<f64>; 4]) -> [Complex<f64>; 4] {
@@ -26,7 +40,7 @@ fn combine(input: &mut [Complex<f64>], zs: &[Complex<f64>]) {
 /// # Safety:
 /// `input.len().is_power_of_two()` and `zs.len() + 4 >= input.len()`
 #[inline(never)]
-unsafe fn fft_inner(input: &mut [Complex<f64>], mut zs: &[Complex<f64>]) {
+pub unsafe fn fft_inner(input: &mut [Complex<f64>], mut zs: &[Complex<f64>]) {
     let n = input.len();
 
     // <shuffle> - this is the recursive descent part of FFT
@@ -34,10 +48,8 @@ unsafe fn fft_inner(input: &mut [Complex<f64>], mut zs: &[Complex<f64>]) {
     for i in 0..n {
         let j = i.reverse_bits() >> shift;
         if j < i {
-            if j >= n {
-                // Safety: j < i < n => j < n therefore this branch is never taken
-                unsafe { std::hint::unreachable_unchecked() }
-            }
+            // Safety: j < i < n => j < n therefore this branch is never taken
+            unsafe { assume_unchecked!(j < n) }
             input.swap(i, j);
         }
     }
@@ -56,15 +68,15 @@ unsafe fn fft_inner(input: &mut [Complex<f64>], mut zs: &[Complex<f64>]) {
         // we don't count the 1,2 cases, so we skip 3. A safety requirement of this
         // function is that zs.len() + 4 >= input.len(). In the example above, that's 4 + 4 >= 8.
         // Since this split_at acts as a sum, we know it will never exceed the length of zs
-        let split = unsafe { zs.split_at_unchecked(len) };
+        unsafe { assume_unchecked!(len <= zs.len()) }
+
+        let split = zs.split_at(len);
         zs = split.1;
 
         len <<= 1;
 
         // Safety: len is less than input.len(), both are powers of 2, so doubling len will never overflow
-        if len == 0 {
-            unsafe { std::hint::unreachable_unchecked() }
-        }
+        unsafe { assume_unchecked!(len > 0) }
 
         for input in input.chunks_exact_mut(len) {
             combine(input, split.0);
@@ -112,20 +124,19 @@ thread_local! {
 
 #[inline(never)]
 /// computes the 'twiddle values' for the FFT algorithm.
-/// These are e^(-2i*pi) where i is in [0, n/2).
+/// These are e^(-2i*pi) where i is in \[0, n/2).
 /// For cache efficiency, these are computed multiple times.
 /// The output size of the twiddle values will be at least n-4.
-/// Laid out in memory, that looks like [[C; 4], [C; 8], [C; 16], ..] but flattened.
-/// We don't compute the twiddle values for n = 2/4 because they're trivially [0] and [0, -i] respectively.
+/// Laid out in memory, that looks like \[\[C; 4], \[C; 8], \[C; 16], ..] but flattened.
+/// We don't compute the twiddle values for n = 2/4 because they're trivially \[0] and \[0, -i] respectively.
 ///
 /// # Safety
 /// 1. zs.len() + 4 is a power of two
 /// 2. len + 4 is a power of two
 /// 3. len < zs.len()
-pub unsafe fn twiddles(mut zs: &mut [Complex<f64>], len: usize) {
-    if !(zs.len() + 4).is_power_of_two() || !(len + 4).is_power_of_two() || len >= zs.len() {
-        std::hint::unreachable_unchecked();
-    }
+unsafe fn twiddles(mut zs: &mut [Complex<f64>], len: usize) {
+    // SAFETY: enforced by caller
+    unsafe { assume_unchecked!(len < zs.len()) }
 
     // SAFETY HELPERS FOR THIS PROCEDURE:
     // len is 4 less than a power of two. Therefore the bit pattern must be something like
@@ -152,17 +163,17 @@ pub unsafe fn twiddles(mut zs: &mut [Complex<f64>], len: usize) {
     zs = zs.split_at_mut(len).1;
 
     loop {
-        // SAFETY: There are guaranteed m elements in this slice. See above
-        let (section, rest) = unsafe { zs.split_at_mut_unchecked(m) };
+        // SAFETY: See above
+        unsafe { assume_unchecked!(m <= zs.len()) }
+
+        let (section, rest) = zs.split_at_mut(m);
         zs = rest;
 
         // SAFETY: section.len() is m
         // m >= 4 (see above for reasoning)
         // m / 2 is therefore definitely strictly less than m, since it's non-zero
         // therefore, m == section.len() > m/2
-        if section.len() <= m / 2 {
-            unsafe { unreachable_unchecked() }
-        }
+        unsafe { assume_unchecked!(m / 2 < section.len()) }
 
         // the above assertion allows the bounds check to be elided here :)
         section[0].re = 1.0;
@@ -173,18 +184,22 @@ pub unsafe fn twiddles(mut zs: &mut [Complex<f64>], len: usize) {
             let theta = step * (i as f64);
             let cos = theta.cos();
 
-            // SAFETY: i is    in [1, m/2)
+            // SAFETY: section.len() == m
+            //       i is      in [1, m/2)
             // m/2 - i is also in [1, m/2)
             // m/2 + i is      in [m/2+1, m)
-            // m - i == m/2 + m/2 - i
-            //   which is also in [m/2+1, m)
             // All of these indicies are within [0, m)
             unsafe {
-                section.get_unchecked_mut(i).re = cos;
-                section.get_unchecked_mut(m / 2 - i).im = -cos;
-                section.get_unchecked_mut(m / 2 + i).im = -cos;
-                section.get_unchecked_mut(m - i).re = -cos;
+                assume_unchecked!(i < section.len());
+                assume_unchecked!(m / 2 - i < section.len());
+                assume_unchecked!(m / 2 + i < section.len());
             }
+
+            // the above assertion allows the bounds check to be elided here :)
+            section[i].re = cos;
+            section[m / 2 - i].im = -cos;
+            section[m / 2 + i].im = -cos;
+            section[m - i].re = -cos;
         }
 
         m <<= 1;
@@ -217,6 +232,20 @@ fn bar() {
             let mut data: Vec<Complex<f64>> = (0..2048).map(|x| Complex::from(x as f64)).collect();
             fft_inplace(&mut data);
             drop(std::hint::black_box(data));
+        }
+        let end = std::time::Instant::now();
+        dbg!(end - start);
+        start = end;
+    }
+}
+
+#[test]
+fn bench_twiddles() {
+    let mut start = std::time::Instant::now();
+    for _ in 0..5 {
+        for _ in 0..1000000 {
+            let mut v = [Complex{re: 0.0, im: 0.0}; 2048 - 4];
+            unsafe { twiddles(&mut v, 0) };
         }
         let end = std::time::Instant::now();
         dbg!(end - start);
